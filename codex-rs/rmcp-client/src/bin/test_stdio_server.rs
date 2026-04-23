@@ -4,6 +4,8 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use rmcp::ErrorData as McpError;
@@ -44,6 +46,7 @@ const MEMO_URI: &str = "memo://codex/example-note";
 const MEMO_CONTENT: &str = "This is a sample MCP resource served by the rmcp test server.";
 const SANDBOX_STATE_META_CAPABILITY: &str = "codex/sandbox-state-meta";
 const SMALL_PNG_BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
+static ECHO_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 pub fn stdio() -> (tokio::io::Stdin, tokio::io::Stdout) {
     (tokio::io::stdin(), tokio::io::stdout())
@@ -513,6 +516,19 @@ impl ServerHandler for TestToolServer {
                     "echo": format!("ECHOING: {}", args.message),
                     "env": env_snapshot.get(env_name),
                 });
+
+                if std::env::var("MCP_TEST_EXIT_AFTER_ECHO_CALLS")
+                    .ok()
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .is_some_and(|limit| {
+                        ECHO_CALL_COUNT.fetch_add(1, Ordering::AcqRel) + 1 == limit
+                    })
+                {
+                    task::spawn(async {
+                        sleep(Duration::from_millis(25)).await;
+                        std::process::exit(0);
+                    });
+                }
 
                 Ok(CallToolResult {
                     content: Vec::new(),

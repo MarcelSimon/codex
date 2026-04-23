@@ -806,8 +806,9 @@ impl RmcpClient {
         .await
         {
             Ok(result) => Ok(result),
-            Err(error) if Self::is_session_expired_404(&error) => {
-                self.reinitialize_after_session_expiry(&service).await?;
+            Err(error) if Self::is_recoverable_disconnect(&error) => {
+                self.reinitialize_after_recoverable_disconnect(&service)
+                    .await?;
                 let recovered_service = self.service().await?;
                 Self::run_service_operation_once(
                     recovered_service,
@@ -848,6 +849,14 @@ impl RmcpClient {
         }
     }
 
+    fn is_recoverable_disconnect(error: &ClientOperationError) -> bool {
+        Self::is_session_expired_404(error)
+            || matches!(
+                error,
+                ClientOperationError::Service(rmcp::service::ServiceError::TransportClosed)
+            )
+    }
+
     fn is_session_expired_404(error: &ClientOperationError) -> bool {
         let ClientOperationError::Service(rmcp::service::ServiceError::TransportSend(error)) =
             error
@@ -868,7 +877,7 @@ impl RmcpClient {
             })
     }
 
-    async fn reinitialize_after_session_expiry(
+    async fn reinitialize_after_recoverable_disconnect(
         &self,
         failed_service: &Arc<RunningService<RoleClient, ElicitationClientService>>,
     ) -> Result<()> {
