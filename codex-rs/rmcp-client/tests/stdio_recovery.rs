@@ -72,7 +72,7 @@ async fn create_client(env: Option<HashMap<OsString, OsString>>) -> anyhow::Resu
         env,
         &[],
         /*cwd*/ None,
-        Arc::new(LocalStdioServerLauncher),
+        Arc::new(LocalStdioServerLauncher::new(std::env::current_dir()?)),
     )
     .await?;
 
