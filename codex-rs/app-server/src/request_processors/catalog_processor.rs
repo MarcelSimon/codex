@@ -188,7 +188,7 @@ impl CatalogRequestProcessor {
         fallback_cwd: Option<PathBuf>,
     ) -> Result<Config, JSONRPCErrorError> {
         self.config_manager
-            .load_latest_config(fallback_cwd)
+            .load_latest_config_for_metadata(fallback_cwd)
             .await
             .map_err(|err| JSONRPCErrorError {
                 code: INTERNAL_ERROR_CODE,

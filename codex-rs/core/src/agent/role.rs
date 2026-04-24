@@ -174,6 +174,7 @@ mod reload {
             reload_overrides(config, preserve_current_provider),
             config.codex_home.clone(),
             config_layer_stack,
+            crate::config::ModelInstructionsFilePolicy::Read,
         )
         .await?;
         if preserve_current_profile {

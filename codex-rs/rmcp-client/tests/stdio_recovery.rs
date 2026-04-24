@@ -17,6 +17,7 @@ use rmcp::model::ElicitationCapability;
 use rmcp::model::FormElicitationCapability;
 use rmcp::model::Implementation;
 use rmcp::model::InitializeRequestParams;
+use rmcp::model::ListToolsResult;
 use rmcp::model::ProtocolVersion;
 use serde_json::json;
 use tokio::time::sleep;
@@ -50,18 +51,6 @@ fn init_params() -> InitializeRequestParams {
             website_url: None,
         },
         protocol_version: ProtocolVersion::V_2025_06_18,
-    }
-}
-
-fn expected_echo_result(message: &str) -> CallToolResult {
-    CallToolResult {
-        content: Vec::new(),
-        structured_content: Some(json!({
-            "echo": format!("ECHOING: {message}"),
-            "env": null,
-        })),
-        is_error: Some(false),
-        meta: None,
     }
 }
 
@@ -107,21 +96,66 @@ async fn call_echo_tool(client: &RmcpClient, message: &str) -> anyhow::Result<Ca
         .await
 }
 
+async fn list_tools(client: &RmcpClient) -> anyhow::Result<ListToolsResult> {
+    client
+        .list_tools(/*params*/ None, Some(Duration::from_secs(5)))
+        .await
+}
+
+fn assert_has_echo_tool(result: &ListToolsResult) {
+    assert!(
+        result.tools.iter().any(|tool| tool.name == "echo"),
+        "expected echo tool in {result:?}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn stdio_transport_closed_recovers_and_retries_once() -> anyhow::Result<()> {
+async fn stdio_transport_closed_replays_safe_list_tools_once() -> anyhow::Result<()> {
     let client = create_client(Some(HashMap::from([(
-        OsString::from("MCP_TEST_EXIT_AFTER_ECHO_CALLS"),
+        OsString::from("MCP_TEST_EXIT_AFTER_LIST_TOOLS_CALLS"),
         OsString::from("1"),
     )])))
     .await?;
 
-    let warmup = call_echo_tool(&client, "warmup").await?;
-    assert_eq!(warmup, expected_echo_result("warmup"));
+    let warmup = list_tools(&client).await?;
+    assert_has_echo_tool(&warmup);
 
     sleep(Duration::from_millis(100)).await;
 
-    let recovered = call_echo_tool(&client, "recovered").await?;
-    assert_eq!(recovered, expected_echo_result("recovered"));
+    let recovered = list_tools(&client).await?;
+    assert_has_echo_tool(&recovered);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn stdio_transport_closed_reconnects_without_replaying_tool_calls() -> anyhow::Result<()> {
+    let temp_dir = tempfile::tempdir()?;
+    let count_file = temp_dir.path().join("echo-count");
+    let client = create_client(Some(HashMap::from([
+        (
+            OsString::from("MCP_TEST_EXIT_DURING_ECHO"),
+            OsString::from("1"),
+        ),
+        (
+            OsString::from("MCP_TEST_ECHO_CALL_COUNT_FILE"),
+            OsString::from(count_file.as_os_str()),
+        ),
+    ])))
+    .await?;
+
+    let err = call_echo_tool(&client, "side-effect").await.expect_err(
+        "ambiguous transport close during a tool call should reconnect but return the original error",
+    );
+    assert!(
+        !err.to_string().is_empty(),
+        "expected a non-empty tool call error"
+    );
+    assert_eq!(std::fs::read_to_string(&count_file)?, "1");
+
+    let recovered = list_tools(&client).await?;
+    assert_has_echo_tool(&recovered);
+    assert_eq!(std::fs::read_to_string(&count_file)?, "1");
 
     Ok(())
 }

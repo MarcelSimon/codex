@@ -216,6 +216,12 @@ enum ClientOperationError {
     Timeout { label: String, duration: Duration },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TransportCloseReplayPolicy {
+    SafeToReplay,
+    ReconnectWithoutReplay,
+}
+
 pub type Elicitation = CreateElicitationRequestParams;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -412,10 +418,15 @@ impl RmcpClient {
     ) -> Result<ListToolsResult> {
         self.refresh_oauth_if_needed().await;
         let result = self
-            .run_service_operation("tools/list", timeout, move |service| {
-                let params = params.clone();
-                async move { service.list_tools(params).await }.boxed()
-            })
+            .run_service_operation(
+                "tools/list",
+                timeout,
+                TransportCloseReplayPolicy::SafeToReplay,
+                move |service| {
+                    let params = params.clone();
+                    async move { service.list_tools(params).await }.boxed()
+                },
+            )
             .await?;
         self.persist_oauth_tokens().await;
         Ok(result)
@@ -428,10 +439,15 @@ impl RmcpClient {
     ) -> Result<ListToolsWithConnectorIdResult> {
         self.refresh_oauth_if_needed().await;
         let result = self
-            .run_service_operation("tools/list", timeout, move |service| {
-                let params = params.clone();
-                async move { service.list_tools(params).await }.boxed()
-            })
+            .run_service_operation(
+                "tools/list",
+                timeout,
+                TransportCloseReplayPolicy::SafeToReplay,
+                move |service| {
+                    let params = params.clone();
+                    async move { service.list_tools(params).await }.boxed()
+                },
+            )
             .await?;
         let tools = result
             .tools
@@ -473,10 +489,15 @@ impl RmcpClient {
     ) -> Result<ListResourcesResult> {
         self.refresh_oauth_if_needed().await;
         let result = self
-            .run_service_operation("resources/list", timeout, move |service| {
-                let params = params.clone();
-                async move { service.list_resources(params).await }.boxed()
-            })
+            .run_service_operation(
+                "resources/list",
+                timeout,
+                TransportCloseReplayPolicy::SafeToReplay,
+                move |service| {
+                    let params = params.clone();
+                    async move { service.list_resources(params).await }.boxed()
+                },
+            )
             .await?;
         self.persist_oauth_tokens().await;
         Ok(result)
@@ -489,10 +510,15 @@ impl RmcpClient {
     ) -> Result<ListResourceTemplatesResult> {
         self.refresh_oauth_if_needed().await;
         let result = self
-            .run_service_operation("resources/templates/list", timeout, move |service| {
-                let params = params.clone();
-                async move { service.list_resource_templates(params).await }.boxed()
-            })
+            .run_service_operation(
+                "resources/templates/list",
+                timeout,
+                TransportCloseReplayPolicy::SafeToReplay,
+                move |service| {
+                    let params = params.clone();
+                    async move { service.list_resource_templates(params).await }.boxed()
+                },
+            )
             .await?;
         self.persist_oauth_tokens().await;
         Ok(result)
@@ -505,10 +531,15 @@ impl RmcpClient {
     ) -> Result<ReadResourceResult> {
         self.refresh_oauth_if_needed().await;
         let result = self
-            .run_service_operation("resources/read", timeout, move |service| {
-                let params = params.clone();
-                async move { service.read_resource(params).await }.boxed()
-            })
+            .run_service_operation(
+                "resources/read",
+                timeout,
+                TransportCloseReplayPolicy::SafeToReplay,
+                move |service| {
+                    let params = params.clone();
+                    async move { service.read_resource(params).await }.boxed()
+                },
+            )
             .await?;
         self.persist_oauth_tokens().await;
         Ok(result)
@@ -547,33 +578,38 @@ impl RmcpClient {
             task: None,
         };
         let result = self
-            .run_service_operation("tools/call", timeout, move |service| {
-                let rmcp_params = rmcp_params.clone();
-                let meta = meta.clone();
-                async move {
-                    let result = service
-                        .peer()
-                        .send_request_with_option(
-                            ClientRequest::CallToolRequest(rmcp::model::CallToolRequest {
-                                method: Default::default(),
-                                params: rmcp_params,
-                                extensions: Default::default(),
-                            }),
-                            rmcp::service::PeerRequestOptions {
-                                timeout: None,
-                                meta,
-                            },
-                        )
-                        .await?
-                        .await_response()
-                        .await?;
-                    match result {
-                        ServerResult::CallToolResult(result) => Ok(result),
-                        _ => Err(rmcp::service::ServiceError::UnexpectedResponse),
+            .run_service_operation(
+                "tools/call",
+                timeout,
+                TransportCloseReplayPolicy::ReconnectWithoutReplay,
+                move |service| {
+                    let rmcp_params = rmcp_params.clone();
+                    let meta = meta.clone();
+                    async move {
+                        let result = service
+                            .peer()
+                            .send_request_with_option(
+                                ClientRequest::CallToolRequest(rmcp::model::CallToolRequest {
+                                    method: Default::default(),
+                                    params: rmcp_params,
+                                    extensions: Default::default(),
+                                }),
+                                rmcp::service::PeerRequestOptions {
+                                    timeout: None,
+                                    meta,
+                                },
+                            )
+                            .await?
+                            .await_response()
+                            .await?;
+                        match result {
+                            ServerResult::CallToolResult(result) => Ok(result),
+                            _ => Err(rmcp::service::ServiceError::UnexpectedResponse),
+                        }
                     }
-                }
-                .boxed()
-            })
+                    .boxed()
+                },
+            )
             .await?;
         self.persist_oauth_tokens().await;
         Ok(result)
@@ -588,6 +624,7 @@ impl RmcpClient {
         self.run_service_operation(
             "notifications/custom",
             /*timeout*/ None,
+            TransportCloseReplayPolicy::ReconnectWithoutReplay,
             move |service| {
                 let params = params.clone();
                 async move {
@@ -616,17 +653,22 @@ impl RmcpClient {
     ) -> Result<ServerResult> {
         self.refresh_oauth_if_needed().await;
         let response = self
-            .run_service_operation("requests/custom", /*timeout*/ None, move |service| {
-                let params = params.clone();
-                async move {
-                    service
-                        .send_request(ClientRequest::CustomRequest(CustomRequest::new(
-                            method, params,
-                        )))
-                        .await
-                }
-                .boxed()
-            })
+            .run_service_operation(
+                "requests/custom",
+                /*timeout*/ None,
+                TransportCloseReplayPolicy::ReconnectWithoutReplay,
+                move |service| {
+                    let params = params.clone();
+                    async move {
+                        service
+                            .send_request(ClientRequest::CustomRequest(CustomRequest::new(
+                                method, params,
+                            )))
+                            .await
+                    }
+                    .boxed()
+                },
+            )
             .await?;
         self.persist_oauth_tokens().await;
         Ok(response)
@@ -832,6 +874,7 @@ impl RmcpClient {
         &self,
         label: &str,
         timeout: Option<Duration>,
+        transport_close_replay_policy: TransportCloseReplayPolicy,
         operation: F,
     ) -> Result<T>
     where
@@ -849,7 +892,7 @@ impl RmcpClient {
         .await
         {
             Ok(result) => Ok(result),
-            Err(error) if Self::is_recoverable_disconnect(&error) => {
+            Err(error) if Self::is_session_expired_404(&error) => {
                 self.reinitialize_after_recoverable_disconnect(&service)
                     .await?;
                 let recovered_service = self.service().await?;
@@ -862,6 +905,25 @@ impl RmcpClient {
                 )
                 .await
                 .map_err(Into::into)
+            }
+            Err(error) if Self::is_transport_closed(&error) => {
+                self.reinitialize_after_recoverable_disconnect(&service)
+                    .await?;
+                match transport_close_replay_policy {
+                    TransportCloseReplayPolicy::SafeToReplay => {
+                        let recovered_service = self.service().await?;
+                        Self::run_service_operation_once(
+                            recovered_service,
+                            label,
+                            timeout,
+                            self.elicitation_pause_state.clone(),
+                            &operation,
+                        )
+                        .await
+                        .map_err(Into::into)
+                    }
+                    TransportCloseReplayPolicy::ReconnectWithoutReplay => Err(error.into()),
+                }
             }
             Err(error) => Err(error.into()),
         }
@@ -892,12 +954,11 @@ impl RmcpClient {
         }
     }
 
-    fn is_recoverable_disconnect(error: &ClientOperationError) -> bool {
-        Self::is_session_expired_404(error)
-            || matches!(
-                error,
-                ClientOperationError::Service(rmcp::service::ServiceError::TransportClosed)
-            )
+    fn is_transport_closed(error: &ClientOperationError) -> bool {
+        matches!(
+            error,
+            ClientOperationError::Service(rmcp::service::ServiceError::TransportClosed)
+        )
     }
 
     fn is_session_expired_404(error: &ClientOperationError) -> bool {

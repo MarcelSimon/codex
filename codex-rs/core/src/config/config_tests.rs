@@ -4905,6 +4905,7 @@ async fn load_config_uses_requirements_guardian_policy_config() -> std::io::Resu
         },
         codex_home.abs(),
         config_layer_stack,
+        ModelInstructionsFilePolicy::Read,
     )
     .await?;
 
@@ -4990,6 +4991,7 @@ async fn requirements_guardian_policy_beats_auto_review() -> std::io::Result<()>
         },
         codex_home.abs(),
         config_layer_stack,
+        ModelInstructionsFilePolicy::Read,
     )
     .await?;
 
@@ -5048,6 +5050,7 @@ async fn load_config_ignores_empty_requirements_guardian_policy_config() -> std:
         },
         codex_home.abs(),
         config_layer_stack,
+        ModelInstructionsFilePolicy::Read,
     )
     .await?;
 
@@ -5185,6 +5188,7 @@ config_file = "./agents/researcher.toml"
         },
         codex_home.abs(),
         config_layer_stack,
+        ModelInstructionsFilePolicy::Read,
     )
     .await?;
 
@@ -6212,6 +6216,42 @@ async fn model_catalog_json_rejects_empty_catalog() -> std::io::Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn model_instructions_file_policy_can_skip_missing_file() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let cwd = TempDir::new()?;
+    std::fs::write(cwd.path().join(".git"), "gitdir: nowhere")?;
+    let missing_instructions = codex_home.path().join("missing-AGENTS.md");
+    let cli_overrides = vec![(
+        "model_instructions_file".to_string(),
+        toml::Value::String(missing_instructions.to_string_lossy().into_owned()),
+    )];
+
+    let err = ConfigBuilder::default()
+        .codex_home(codex_home.path().to_path_buf())
+        .cli_overrides(cli_overrides.clone())
+        .fallback_cwd(Some(cwd.path().to_path_buf()))
+        .build()
+        .await
+        .expect_err("default policy should read model instructions files");
+    assert_eq!(err.kind(), ErrorKind::NotFound);
+    assert!(
+        err.to_string().contains("model instructions file"),
+        "unexpected error: {err}"
+    );
+
+    let config = ConfigBuilder::default()
+        .codex_home(codex_home.path().to_path_buf())
+        .cli_overrides(cli_overrides)
+        .fallback_cwd(Some(cwd.path().to_path_buf()))
+        .model_instructions_file_policy(ModelInstructionsFilePolicy::Skip)
+        .build()
+        .await?;
+
+    assert_eq!(config.base_instructions, None);
+    Ok(())
+}
+
 fn create_test_fixture() -> std::io::Result<PrecedenceTestFixture> {
     let toml = r#"
 model = "o3"
@@ -7025,6 +7065,7 @@ async fn test_requirements_web_search_mode_allowlist_does_not_warn_when_unset() 
         },
         fixture.codex_home(),
         config_layer_stack,
+        ModelInstructionsFilePolicy::Read,
     )
     .await?;
 

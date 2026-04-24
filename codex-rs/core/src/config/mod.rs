@@ -873,7 +873,7 @@ impl AuthManagerConfig for Config {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct ConfigBuilder {
     codex_home: Option<PathBuf>,
     cli_overrides: Option<Vec<(String, TomlValue)>>,
@@ -881,7 +881,35 @@ pub struct ConfigBuilder {
     loader_overrides: Option<LoaderOverrides>,
     cloud_requirements: CloudRequirementsLoader,
     thread_config_loader: Option<Arc<dyn ThreadConfigLoader>>,
+    model_instructions_file_policy: ModelInstructionsFilePolicy,
     fallback_cwd: Option<PathBuf>,
+}
+
+/// Controls whether config loading reads the optional
+/// `model_instructions_file` contents.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ModelInstructionsFilePolicy {
+    /// Read `model_instructions_file` and fail config loading if it cannot be
+    /// read.
+    Read,
+    /// Keep all config validation intact, but do not read
+    /// `model_instructions_file`.
+    Skip,
+}
+
+impl Default for ConfigBuilder {
+    fn default() -> Self {
+        Self {
+            codex_home: None,
+            cli_overrides: None,
+            harness_overrides: None,
+            loader_overrides: None,
+            cloud_requirements: CloudRequirementsLoader::default(),
+            thread_config_loader: None,
+            model_instructions_file_policy: ModelInstructionsFilePolicy::Read,
+            fallback_cwd: None,
+        }
+    }
 }
 
 impl ConfigBuilder {
@@ -918,6 +946,14 @@ impl ConfigBuilder {
         self
     }
 
+    pub fn model_instructions_file_policy(
+        mut self,
+        model_instructions_file_policy: ModelInstructionsFilePolicy,
+    ) -> Self {
+        self.model_instructions_file_policy = model_instructions_file_policy;
+        self
+    }
+
     pub fn fallback_cwd(mut self, fallback_cwd: Option<PathBuf>) -> Self {
         self.fallback_cwd = fallback_cwd;
         self
@@ -936,6 +972,7 @@ impl ConfigBuilder {
             loader_overrides,
             cloud_requirements,
             thread_config_loader,
+            model_instructions_file_policy,
             fallback_cwd,
         } = self;
         let codex_home = match codex_home {
@@ -1015,6 +1052,7 @@ impl ConfigBuilder {
                 harness_overrides,
                 codex_home,
                 lock_config_layer_stack,
+                model_instructions_file_policy,
             )
             .await?;
             config.config_lock_toml = Some(Arc::new(expected_lock_config));
@@ -1029,6 +1067,7 @@ impl ConfigBuilder {
             harness_overrides,
             codex_home,
             config_layer_stack,
+            model_instructions_file_policy,
         )
         .await
     }
@@ -1167,6 +1206,7 @@ impl Config {
             ConfigOverrides::default(),
             codex_home,
             ConfigLayerStack::default(),
+            ModelInstructionsFilePolicy::Read,
         )
         .await
     }
@@ -2006,6 +2046,7 @@ impl Config {
             overrides,
             codex_home,
             config_layer_stack,
+            ModelInstructionsFilePolicy::Read,
         )
         .await
     }
@@ -2016,6 +2057,7 @@ impl Config {
         overrides: ConfigOverrides,
         codex_home: AbsolutePathBuf,
         config_layer_stack: ConfigLayerStack,
+        model_instructions_file_policy: ModelInstructionsFilePolicy,
     ) -> std::io::Result<Self> {
         let config = Self::build_config_with_layer_stack(
             fs,
@@ -2023,6 +2065,7 @@ impl Config {
             overrides.clone(),
             codex_home.clone(),
             config_layer_stack.clone(),
+            model_instructions_file_policy,
         )
         .await?;
         let mut interpolation_source_cfg = cfg.clone();
@@ -2061,6 +2104,7 @@ impl Config {
                 overrides,
                 codex_home,
                 config_layer_stack,
+                model_instructions_file_policy,
             )
             .await;
         }
@@ -2073,6 +2117,7 @@ impl Config {
         overrides: ConfigOverrides,
         codex_home: AbsolutePathBuf,
         config_layer_stack: ConfigLayerStack,
+        model_instructions_file_policy: ModelInstructionsFilePolicy,
     ) -> std::io::Result<Self> {
         // Keep the large config-construction future off small test thread stacks.
         Box::pin(async move {
@@ -2743,12 +2788,17 @@ impl Config {
             .model_instructions_file
             .as_ref()
             .or(cfg.model_instructions_file.as_ref());
-        let file_base_instructions = Self::try_read_non_empty_file(
-            fs,
-            model_instructions_path,
-            "model instructions file",
-        )
-        .await?;
+        let file_base_instructions = match model_instructions_file_policy {
+            ModelInstructionsFilePolicy::Read => {
+                Self::try_read_non_empty_file(
+                    fs,
+                    model_instructions_path,
+                    "model instructions file",
+                )
+                .await?
+            }
+            ModelInstructionsFilePolicy::Skip => None,
+        };
         let base_instructions = base_instructions
             .or(file_base_instructions)
             .or(cfg.instructions.clone());

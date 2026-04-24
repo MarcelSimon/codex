@@ -47,6 +47,7 @@ const MEMO_CONTENT: &str = "This is a sample MCP resource served by the rmcp tes
 const SANDBOX_STATE_META_CAPABILITY: &str = "codex/sandbox-state-meta";
 const SMALL_PNG_BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
 static ECHO_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
+static LIST_TOOLS_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 pub fn stdio() -> (tokio::io::Stdin, tokio::io::Stdout) {
     (tokio::io::stdin(), tokio::io::stdout())
@@ -417,6 +418,19 @@ impl ServerHandler for TestToolServer {
     ) -> impl std::future::Future<Output = Result<ListToolsResult, McpError>> + Send + '_ {
         let tools = self.tools.clone();
         async move {
+            if std::env::var("MCP_TEST_EXIT_AFTER_LIST_TOOLS_CALLS")
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+                .is_some_and(|limit| {
+                    LIST_TOOLS_CALL_COUNT.fetch_add(1, Ordering::AcqRel) + 1 == limit
+                })
+            {
+                task::spawn(async {
+                    sleep(Duration::from_millis(25)).await;
+                    std::process::exit(0);
+                });
+            }
+
             Ok(ListToolsResult {
                 tools: (*tools).clone(),
                 next_cursor: None,
@@ -517,6 +531,23 @@ impl ServerHandler for TestToolServer {
                     "echo": format!("ECHOING: {}", args.message),
                     "env": env_snapshot.get(env_name),
                 });
+
+                if let Ok(path) = std::env::var("MCP_TEST_ECHO_CALL_COUNT_FILE") {
+                    let path = std::path::Path::new(&path);
+                    let next_count = std::fs::read_to_string(path)
+                        .ok()
+                        .and_then(|value| value.parse::<usize>().ok())
+                        .unwrap_or(0)
+                        + 1;
+                    if let Some(parent) = path.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    let _ = std::fs::write(path, next_count.to_string());
+                }
+
+                if std::env::var_os("MCP_TEST_EXIT_DURING_ECHO").is_some() {
+                    std::process::exit(0);
+                }
 
                 if std::env::var("MCP_TEST_EXIT_AFTER_ECHO_CALLS")
                     .ok()

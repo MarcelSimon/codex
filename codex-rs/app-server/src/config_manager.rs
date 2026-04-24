@@ -6,7 +6,9 @@ use codex_config::LoaderOverrides;
 use codex_config::ThreadConfigLoader;
 use codex_config::loader::load_config_layers_state;
 use codex_core::config::Config;
+use codex_core::config::ConfigBuilder;
 use codex_core::config::ConfigOverrides;
+use codex_core::config::ModelInstructionsFilePolicy;
 use codex_exec_server::LOCAL_FS;
 use codex_features::feature_for_key;
 use codex_login::AuthManager;
@@ -116,7 +118,10 @@ impl ConfigManager {
     }
 
     pub(crate) async fn sync_default_client_residency_requirement(&self) {
-        match self.load_latest_config(/*fallback_cwd*/ None).await {
+        match self
+            .load_latest_config_for_metadata(/*fallback_cwd*/ None)
+            .await
+        {
             Ok(config) => {
                 set_default_client_residency_requirement(config.enforce_residency.value());
             }
@@ -131,11 +136,26 @@ impl ConfigManager {
         &self,
         fallback_cwd: Option<PathBuf>,
     ) -> std::io::Result<Config> {
-        self.load_with_cli_overrides(
+        self.load_with_cli_overrides_and_model_instructions_file_policy(
             &self.current_cli_overrides(),
             /*request_overrides*/ None,
             ConfigOverrides::default(),
             fallback_cwd,
+            ModelInstructionsFilePolicy::Read,
+        )
+        .await
+    }
+
+    pub(crate) async fn load_latest_config_for_metadata(
+        &self,
+        fallback_cwd: Option<PathBuf>,
+    ) -> std::io::Result<Config> {
+        self.load_with_cli_overrides_and_model_instructions_file_policy(
+            &self.current_cli_overrides(),
+            /*request_overrides*/ None,
+            ConfigOverrides::default(),
+            fallback_cwd,
+            ModelInstructionsFilePolicy::Skip,
         )
         .await
     }
@@ -156,11 +176,12 @@ impl ConfigManager {
         request_overrides: Option<HashMap<String, serde_json::Value>>,
         typesafe_overrides: ConfigOverrides,
     ) -> std::io::Result<Config> {
-        self.load_with_cli_overrides(
+        self.load_with_cli_overrides_and_model_instructions_file_policy(
             &self.current_cli_overrides(),
             request_overrides,
             typesafe_overrides,
             /*fallback_cwd*/ None,
+            ModelInstructionsFilePolicy::Read,
         )
         .await
     }
@@ -171,11 +192,12 @@ impl ConfigManager {
         typesafe_overrides: ConfigOverrides,
         cwd: Option<PathBuf>,
     ) -> std::io::Result<Config> {
-        self.load_with_cli_overrides(
+        self.load_with_cli_overrides_and_model_instructions_file_policy(
             &self.current_cli_overrides(),
             request_overrides,
             typesafe_overrides,
             cwd,
+            ModelInstructionsFilePolicy::Read,
         )
         .await
     }
@@ -186,6 +208,24 @@ impl ConfigManager {
         request_overrides: Option<HashMap<String, serde_json::Value>>,
         typesafe_overrides: ConfigOverrides,
         fallback_cwd: Option<PathBuf>,
+    ) -> std::io::Result<Config> {
+        self.load_with_cli_overrides_and_model_instructions_file_policy(
+            cli_overrides,
+            request_overrides,
+            typesafe_overrides,
+            fallback_cwd,
+            ModelInstructionsFilePolicy::Read,
+        )
+        .await
+    }
+
+    async fn load_with_cli_overrides_and_model_instructions_file_policy(
+        &self,
+        cli_overrides: &[(String, TomlValue)],
+        request_overrides: Option<HashMap<String, serde_json::Value>>,
+        typesafe_overrides: ConfigOverrides,
+        fallback_cwd: Option<PathBuf>,
+        model_instructions_file_policy: ModelInstructionsFilePolicy,
     ) -> std::io::Result<Config> {
         let merged_cli_overrides = cli_overrides
             .iter()
@@ -198,7 +238,7 @@ impl ConfigManager {
             )
             .collect::<Vec<_>>();
 
-        let mut config = codex_core::config::ConfigBuilder::default()
+        let mut config = ConfigBuilder::default()
             .codex_home(self.codex_home.clone())
             .cli_overrides(merged_cli_overrides)
             .loader_overrides(self.loader_overrides.clone())
@@ -206,6 +246,7 @@ impl ConfigManager {
             .fallback_cwd(fallback_cwd)
             .cloud_requirements(self.current_cloud_requirements())
             .thread_config_loader(self.current_thread_config_loader())
+            .model_instructions_file_policy(model_instructions_file_policy)
             .build()
             .await?;
         self.apply_runtime_feature_enablement(&mut config);
