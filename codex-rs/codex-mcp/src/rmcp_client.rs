@@ -10,6 +10,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::env;
 use std::ffi::OsString;
+use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -154,43 +155,45 @@ impl AsyncManagedClient {
         let startup_complete_for_fut = Arc::clone(&startup_complete);
         let cancel_token_for_fut = cancel_token.clone();
         let fut = async move {
-            let outcome = match async {
-                if let Err(error) = validate_mcp_server_name(&server_name) {
-                    return Err(error.into());
-                }
+            let startup_timeout = config.startup_timeout_sec.or(Some(DEFAULT_STARTUP_TIMEOUT));
+            let outcome = enforce_startup_timeout(startup_timeout, async {
+                match async {
+                    if let Err(error) = validate_mcp_server_name(&server_name) {
+                        return Err(error.into());
+                    }
 
-                let client = Arc::new(
-                    make_rmcp_client(
-                        &server_name,
-                        config.clone(),
-                        store_mode,
-                        runtime_environment,
-                        runtime_auth_provider,
+                    let client = Arc::new(
+                        make_rmcp_client(
+                            &server_name,
+                            config.clone(),
+                            store_mode,
+                            runtime_environment,
+                            runtime_auth_provider,
+                        )
+                        .await?,
+                    );
+                    start_server_task(
+                        server_name,
+                        client,
+                        StartServerTaskParams {
+                            startup_timeout,
+                            tool_timeout: config.tool_timeout_sec.unwrap_or(DEFAULT_TOOL_TIMEOUT),
+                            tool_filter: startup_tool_filter,
+                            tx_event,
+                            elicitation_requests,
+                            codex_apps_tools_cache_context,
+                        },
                     )
-                    .await?,
-                );
-                start_server_task(
-                    server_name,
-                    client,
-                    StartServerTaskParams {
-                        startup_timeout: config
-                            .startup_timeout_sec
-                            .or(Some(DEFAULT_STARTUP_TIMEOUT)),
-                        tool_timeout: config.tool_timeout_sec.unwrap_or(DEFAULT_TOOL_TIMEOUT),
-                        tool_filter: startup_tool_filter,
-                        tx_event,
-                        elicitation_requests,
-                        codex_apps_tools_cache_context,
-                    },
-                )
+                    .await
+                }
+                .or_cancel(&cancel_token_for_fut)
                 .await
-            }
-            .or_cancel(&cancel_token_for_fut)
-            .await
-            {
-                Ok(result) => result,
-                Err(CancelErr::Cancelled) => Err(StartupOutcomeError::Cancelled),
-            };
+                {
+                    Ok(result) => result,
+                    Err(CancelErr::Cancelled) => Err(StartupOutcomeError::Cancelled),
+                }
+            })
+            .await;
 
             startup_complete_for_fut.store(true, Ordering::Release);
             outcome
@@ -303,6 +306,8 @@ impl AsyncManagedClient {
 pub(crate) enum StartupOutcomeError {
     #[error("MCP startup cancelled")]
     Cancelled,
+    #[error("MCP startup timed out after {timeout:?}")]
+    TimedOut { timeout: Duration },
     // We can't store the original error here because anyhow::Error doesn't implement
     // `Clone`.
     #[error("MCP startup failed: {error}")]
@@ -314,6 +319,21 @@ impl From<anyhow::Error> for StartupOutcomeError {
         Self::Failed {
             error: error.to_string(),
         }
+    }
+}
+
+pub(crate) async fn enforce_startup_timeout<T, F>(
+    timeout: Option<Duration>,
+    startup: F,
+) -> Result<T, StartupOutcomeError>
+where
+    F: Future<Output = Result<T, StartupOutcomeError>>,
+{
+    match timeout {
+        Some(timeout) => tokio::time::timeout(timeout, startup)
+            .await
+            .map_err(|_| StartupOutcomeError::TimedOut { timeout })?,
+        None => startup.await,
     }
 }
 

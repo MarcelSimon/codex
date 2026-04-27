@@ -250,12 +250,10 @@ impl McpConnectionManager {
                 match outcome {
                     Ok(_) => summary.ready.push(server_name),
                     Err(StartupOutcomeError::Cancelled) => summary.cancelled.push(server_name),
-                    Err(StartupOutcomeError::Failed { error }) => {
-                        summary.failed.push(McpStartupFailure {
-                            server: server_name,
-                            error,
-                        })
-                    }
+                    Err(error) => summary.failed.push(McpStartupFailure {
+                        server: server_name,
+                        error: startup_outcome_error_message(error),
+                    }),
                 }
             }
             let _ = tx_event
@@ -683,16 +681,17 @@ fn mcp_init_error_display(
             "The {server_name} MCP server is not logged in. Run `codex mcp login {server_name}`."
         )
     } else if is_mcp_client_startup_timeout_error(err) {
-        let startup_timeout_secs = match entry {
-            Some(entry) => match entry.config.startup_timeout_sec {
-                Some(timeout) => timeout,
-                None => DEFAULT_STARTUP_TIMEOUT,
-            },
-            None => DEFAULT_STARTUP_TIMEOUT,
-        }
-        .as_secs();
+        let startup_timeout = match err {
+            StartupOutcomeError::TimedOut { timeout } => *timeout,
+            StartupOutcomeError::Cancelled | StartupOutcomeError::Failed { .. } => entry
+                .and_then(|entry| entry.config.startup_timeout_sec)
+                .unwrap_or(DEFAULT_STARTUP_TIMEOUT),
+        };
+        let startup_timeout_secs = startup_timeout.as_secs();
         format!(
-            "MCP client for `{server_name}` timed out after {startup_timeout_secs} seconds. Add or adjust `startup_timeout_sec` in your config.toml:\n[mcp_servers.{server_name}]\nstartup_timeout_sec = XX"
+            "MCP client for `{server_name}` timed out after {startup_timeout_secs} seconds. Add or adjust `startup_timeout_sec` in your config.toml:
+[mcp_servers.{server_name}]
+startup_timeout_sec = XX"
         )
     } else {
         format!("MCP client for `{server_name}` failed to start: {err:#}")
@@ -702,6 +701,9 @@ fn mcp_init_error_display(
 fn startup_outcome_error_message(error: StartupOutcomeError) -> String {
     match error {
         StartupOutcomeError::Cancelled => "MCP startup cancelled".to_string(),
+        StartupOutcomeError::TimedOut { timeout } => {
+            format!("MCP startup timed out after {timeout:?}")
+        }
         StartupOutcomeError::Failed { error } => error,
     }
 }
@@ -709,17 +711,18 @@ fn startup_outcome_error_message(error: StartupOutcomeError) -> String {
 fn is_mcp_client_auth_required_error(error: &StartupOutcomeError) -> bool {
     match error {
         StartupOutcomeError::Failed { error } => error.contains("Auth required"),
-        _ => false,
+        StartupOutcomeError::Cancelled | StartupOutcomeError::TimedOut { .. } => false,
     }
 }
 
 fn is_mcp_client_startup_timeout_error(error: &StartupOutcomeError) -> bool {
     match error {
+        StartupOutcomeError::TimedOut { .. } => true,
         StartupOutcomeError::Failed { error } => {
             error.contains("request timed out")
                 || error.contains("timed out handshaking with MCP server")
         }
-        _ => false,
+        StartupOutcomeError::Cancelled => false,
     }
 }
 

@@ -11,6 +11,7 @@ use crate::rmcp_client::AsyncManagedClient;
 use crate::rmcp_client::ManagedClient;
 use crate::rmcp_client::StartupOutcomeError;
 use crate::rmcp_client::elicitation_capability_for_server;
+use crate::rmcp_client::enforce_startup_timeout;
 use crate::tools::ToolFilter;
 use crate::tools::ToolInfo;
 use crate::tools::filter_tools;
@@ -798,6 +799,22 @@ async fn list_all_tools_uses_startup_snapshot_when_client_startup_fails() {
     assert_eq!(tool.callable_name, "calendar_create_event");
 }
 
+#[tokio::test]
+async fn startup_timeout_bounds_pending_startup_future() {
+    let timeout = Duration::from_millis(10);
+
+    let result = enforce_startup_timeout(
+        Some(timeout),
+        futures::future::pending::<Result<(), StartupOutcomeError>>(),
+    )
+    .await;
+
+    assert!(matches!(
+        result,
+        Err(StartupOutcomeError::TimedOut { timeout: actual }) if actual == timeout
+    ));
+}
+
 #[test]
 fn elicitation_capability_uses_2025_06_18_shape_for_all_servers() {
     for server_name in [CODEX_APPS_MCP_SERVER_NAME, "custom_mcp"] {
@@ -907,6 +924,21 @@ fn mcp_init_error_display_includes_startup_timeout_hint() {
 
     assert_eq!(
         "MCP client for `slow` timed out after 30 seconds. Add or adjust `startup_timeout_sec` in your config.toml:\n[mcp_servers.slow]\nstartup_timeout_sec = XX",
+        display
+    );
+}
+
+#[test]
+fn mcp_init_error_display_uses_startup_timeout_variant_duration() {
+    let server_name = "slow";
+    let err = StartupOutcomeError::TimedOut {
+        timeout: Duration::from_secs(7),
+    };
+
+    let display = mcp_init_error_display(server_name, /*entry*/ None, &err);
+
+    assert_eq!(
+        "MCP client for `slow` timed out after 7 seconds. Add or adjust `startup_timeout_sec` in your config.toml:\n[mcp_servers.slow]\nstartup_timeout_sec = XX",
         display
     );
 }
